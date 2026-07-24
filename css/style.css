@@ -58,6 +58,13 @@ a:hover { text-decoration: underline; }
   font-size: .95rem; outline: none; transition: border-color .2s, box-shadow .2s;
 }
 #search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.top-action {
+  flex-shrink: 0; padding: 9px 16px; border-radius: 999px; font-size: .88rem; font-weight: 600;
+  background: var(--bg-raise); border: 1px solid rgba(255,255,255,.12); color: var(--text);
+  transition: border-color .2s, background .2s; white-space: nowrap;
+}
+.top-action:hover { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 640px) { .top-action { padding: 8px 11px; font-size: .8rem; } .brand-name { display: none; } }
 
 /* ---------------- Hero ---------------- */
 #hero { position: relative; min-height: 420px; display: flex; align-items: flex-end; overflow: hidden; }
@@ -263,7 +270,10 @@ a:hover { text-decoration: underline; }
   font-size: 1.35em; text-align: center; text-indent: 0; margin: 1.2em 0 1.4em;
   font-variant: small-caps; letter-spacing: .08em; color: #4a3d28;
 }
-.page-num { flex-shrink: 0; text-align: center; font-family: Georgia, serif; font-size: .8rem; color: #8d7f63; padding: 6px 0 14px; }
+.page-num {
+  flex: 0 0 36px; height: 36px; display: flex; align-items: flex-start; justify-content: center;
+  font-family: Georgia, serif; font-size: .8rem; line-height: 1; color: #8d7f63; padding-top: 8px;
+}
 .page-content .w { border-radius: 3px; }
 .page-content .w.speaking { background: var(--highlight); box-shadow: 0 0 0 2px var(--highlight); }
 .page-content .w.spoken-dialogue { }

@@ -6,6 +6,9 @@
 <title>Folio — Stream thousands of free books with AI narration</title>
 <meta name="description" content="An open-source library of 75,000+ public-domain books and novels. Browse Netflix-style, read like a real book with page turns, and listen with realistic AI narration, character voices and word-by-word highlighting.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📖</text></svg>">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0d0e12">
+<link rel="apple-touch-icon" href="icon.svg">
 <link rel="preconnect" href="https://gutendex.com">
 <link rel="preconnect" href="https://www.gutenberg.org">
 <link rel="stylesheet" href="css/style.css">
@@ -23,6 +26,9 @@
              placeholder="Search 75,000+ books, authors, genres…" aria-label="Search books">
       <span class="search-icon">🔍</span>
     </div>
+    <button id="btn-import" class="top-action" title="Import a .epub or .txt book from your device">＋ Import</button>
+    <button id="btn-install" class="top-action hidden" title="Install Folio as an app">📲 Get app</button>
+    <input id="import-file" type="file" accept=".epub,.txt,text/plain,application/epub+zip" class="hidden">
   </header>
 
   <!-- Hero banner -->
@@ -59,6 +65,9 @@
       literature digitized by volunteers — via the open
       <a href="https://gutendex.com" target="_blank" rel="noopener">Gutendex</a> catalog.
       Narration is generated on your device with the Web Speech API. No account, no tracking, no cost.</p>
+    <p>📲 <strong>Use it like an app, offline:</strong> every book you open or download is saved on your device.
+      On Android/desktop Chrome tap <em>“Get app”</em> above (or menu → Install app); on iPhone open in Safari and tap
+      <em>Share → Add to Home Screen</em>. Your own <em>.epub</em> and <em>.txt</em> books can be added with <em>＋ Import</em>.</p>
   </footer>
 </div>
 
@@ -75,6 +84,7 @@
         <div id="modal-stats" class="muted small"></div>
         <div class="modal-actions">
           <button id="modal-read" class="btn btn-primary">▶&nbsp; Read &amp; Listen</button>
+          <button id="modal-download" class="btn btn-ghost">⬇&nbsp; Download</button>
         </div>
         <div id="modal-resume" class="small hidden"></div>
         <div id="modal-subjects"></div>
@@ -167,7 +177,10 @@
 
 <div id="toast" class="hidden"></div>
 
+<script src="js/vendor/fflate.js"></script>
 <script src="js/api.js"></script>
+<script src="js/store.js"></script>
+<script src="js/import.js"></script>
 <script src="js/narrator.js"></script>
 <script src="js/reader.js"></script>
 <script src="js/app.js"></script>
