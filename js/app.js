@@ -16,6 +16,8 @@
 
   const GENRE_ROWS = [
     { title: "Trending now", sub: "most read this week", query: {} },
+    { title: "🆕 New in the library", sub: "latest additions to the catalog", query: { sort: "descending" } },
+    { title: "Modern era", sub: "20th-century authors", query: { author_year_start: 1880 } },
     { title: "Mystery & Detective", query: { topic: "detective" } },
     { title: "Science Fiction", query: { topic: "science fiction" } },
     { title: "Romance", query: { topic: "romance" } },
@@ -476,6 +478,12 @@
   $("rng-music").addEventListener("input", (e) => {
     MoodMusic.setVolume(+e.target.value);
     Settings.save({ musicVol: +e.target.value });
+  });
+  $("btn-test-voice").addEventListener("click", () => {
+    const btn = $("btn-test-voice");
+    btn.textContent = narrator.engine === "neural" && narrator.neural.status !== "ready"
+      ? "⏳ Preparing AI voice…" : "🔊 Speaking…";
+    narrator.speakSample().finally(() => { btn.textContent = "🔊 Test the voice"; });
   });
   $("rng-rate").addEventListener("input", (e) => {
     const r = +e.target.value;

@@ -24,7 +24,13 @@ const AudioHub = {
   },
 };
 
-const KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+// The AI voice engine ships with the site (js/vendor/kokoro.web.js +
+// ONNX runtime): no third-party CDN in the critical path. The CDN is
+// kept only as a last-resort fallback. Voice model weights (~90 MB)
+// stream once from the Hugging Face hub and are cached by the browser.
+const KOKORO_LOCAL = () => new URL("js/vendor/kokoro.web.js", document.baseURI).href;
+const KOKORO_WASM_DIR = () => new URL("js/vendor/", document.baseURI).href;
+const KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
 const KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
 const NEURAL_VOICES = [
@@ -149,23 +155,55 @@ class Narrator {
     this._emitEngine();
     this._neuralLoading = (async () => {
       try {
-        const mod = await import(KOKORO_CDN);
-        const device = navigator.gpu ? "webgpu" : "wasm";
-        const dtype = device === "webgpu" ? "fp32" : "q8";
+        let mod;
+        try {
+          mod = await import(KOKORO_LOCAL());
+        } catch {
+          mod = await import(KOKORO_CDN);
+        }
+        // Point the ONNX runtime at our own copies of its wasm files.
+        // The web bundle exposes a simplified env ({wasmPaths}); the full
+        // transformers env nests it under backends.onnx.wasm.
+        if (mod.env) {
+          if ("wasmPaths" in mod.env) {
+            mod.env.wasmPaths = KOKORO_WASM_DIR();
+          } else if (mod.env.backends && mod.env.backends.onnx && mod.env.backends.onnx.wasm) {
+            mod.env.backends.onnx.wasm.wasmPaths = KOKORO_WASM_DIR();
+          }
+        }
+
         const seen = {};
-        this.neural.tts = await mod.KokoroTTS.from_pretrained(KOKORO_MODEL, {
-          dtype,
-          device,
-          progress_callback: (e) => {
-            if (e.status === "progress" && e.total) {
-              seen[e.file] = [e.loaded, e.total];
-              let l = 0, t = 0;
-              for (const [a, b] of Object.values(seen)) { l += a; t += b; }
-              this.neural.progress = Math.round((l / t) * 100);
-              this._emitEngine();
-            }
-          },
-        });
+        const progress_callback = (e) => {
+          if (e.status === "progress" && e.total) {
+            seen[e.file] = [e.loaded, e.total];
+            let l = 0, t = 0;
+            for (const [a, b] of Object.values(seen)) { l += a; t += b; }
+            this.neural.progress = Math.round((l / t) * 100);
+            this._emitEngine();
+          }
+        };
+
+        // Prefer GPU; if that path fails on this device, retry on WASM.
+        const attempts = navigator.gpu
+          ? [{ device: "webgpu", dtype: "fp32" }, { device: "wasm", dtype: "q8" }]
+          : [{ device: "wasm", dtype: "q8" }];
+        let lastErr = null;
+        for (const { device, dtype } of attempts) {
+          try {
+            this.neural.tts = await mod.KokoroTTS.from_pretrained(KOKORO_MODEL, { dtype, device, progress_callback });
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            this.neural.tts = null;
+          }
+        }
+        if (!this.neural.tts) throw lastErr || new Error("Model failed to load");
+
+        // Verify the engine actually produces audio before declaring ready.
+        const check = await this.neural.tts.generate("Ready.", { voice: this.neuralVoice, speed: 1 });
+        if (!check || !check.audio || !check.audio.length) throw new Error("Engine produced no audio");
+
         this.neural.status = "ready";
         this._emitEngine();
         return true;
@@ -177,6 +215,40 @@ class Narrator {
       }
     })();
     return this._neuralLoading;
+  }
+
+  /** Speak one sample line through the current engine (for the settings panel). */
+  async speakSample() {
+    const text = "Chapter one. The night was quiet, and the story was about to begin.";
+    this.stop();
+    const session = ++this._session;
+    if (this.engine === "neural") {
+      const ok = await this.ensureNeural();
+      if (session !== this._session) return;
+      if (ok) {
+        try {
+          const clip = await this._generate(text, this.neuralVoice);
+          if (session !== this._session) return;
+          const ctx = AudioHub.ctx();
+          const buffer = ctx.createBuffer(1, clip.samples.length, clip.rate);
+          buffer.getChannelData(0).set(clip.samples);
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(ctx.destination);
+          this._source = source;
+          source.start();
+          return;
+        } catch { /* fall through to system sample */ }
+      }
+    }
+    if (this.synth) {
+      const u = new SpeechSynthesisUtterance(text);
+      if (this.narratorVoice) u.voice = this.narratorVoice;
+      u.rate = this.rate;
+      this._utter = u;
+      this.synth.cancel();
+      this.synth.speak(u);
+    }
   }
 
   /** Stable, distinct voice per character name. */
@@ -219,10 +291,24 @@ class Narrator {
   play() {
     if (!this.supported || !this.book) return;
     if (this.playing) return;
-    AudioHub.ctx(); // unlock audio on user gesture
+    // Both audio paths must be unlocked synchronously inside the tap:
+    // iOS refuses speech that starts after an await (e.g. AI model load).
+    AudioHub.ctx();
+    this._unlockSpeech();
     this.playing = true;
     this.onState && this.onState(true);
     this._speakSentence(this.sentenceIdx);
+  }
+
+  /** Prime speechSynthesis within a user gesture (iOS/Safari requirement). */
+  _unlockSpeech() {
+    if (this._speechUnlocked || !this.synth) return;
+    try {
+      const u = new SpeechSynthesisUtterance(" ");
+      u.volume = 0;
+      this.synth.speak(u);
+      this._speechUnlocked = true;
+    } catch { /* not fatal */ }
   }
 
   pause() {
@@ -337,6 +423,7 @@ class Narrator {
     const voice = isDialogue ? this._voiceForSpeaker(seg.speaker).neural : this.neuralVoice;
 
     let clip;
+    const genStart = performance.now();
     try {
       clip = await this._generate(text, voice);
     } catch {
@@ -345,6 +432,12 @@ class Narrator {
       return;
     }
     if (session !== this._session || !this.playing) return;
+    if (performance.now() - genStart > 45000 && !this._warnedSlow) {
+      this._warnedSlow = true;
+      if (typeof toast === "function") {
+        toast("This device is slow at AI narration — switch to ⚡ Device voices in 🎙️ settings for smooth listening.", 6000);
+      }
+    }
 
     // Warm the cache for what comes next while this clip plays.
     this._prefetch(seg);
