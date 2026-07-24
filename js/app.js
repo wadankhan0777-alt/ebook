@@ -433,11 +433,17 @@
     $("field-neural-voice").classList.toggle("hidden", narrator.engine !== "neural");
     $("field-sys-voice").classList.toggle("hidden", narrator.engine !== "system");
     const st = $("neural-status");
-    if (narrator.engine === "neural" && narrator.neural.status === "loading") {
-      st.textContent = `Downloading AI voice model… ${narrator.neural.progress}%`;
+    const n = narrator.neural;
+    if (n.status === "loading") {
+      const mb = n.mb ? ` (${n.mb.done.toFixed(0)}/${n.mb.total.toFixed(0)} MB)` : "";
+      st.textContent = `Downloading the AI voice — one time only… ${n.progress}%${mb}`;
       st.classList.remove("hidden");
-    } else if (narrator.engine === "neural" && narrator.neural.status === "error") {
-      st.textContent = "AI voice couldn't load on this device — device voices will be used.";
+    } else if (n.status === "error") {
+      st.textContent = "The AI voice couldn't load on this device (" + (n.error || "") +
+        "). Switched to device voices so narration keeps working.";
+      st.classList.remove("hidden");
+    } else if (n.status === "ready") {
+      st.textContent = "✓ AI voice ready" + (n.device ? " (" + n.device + ")" : "") + " — works offline now.";
       st.classList.remove("hidden");
     } else st.classList.add("hidden");
   }

@@ -2,7 +2,7 @@
  * App shell: stale-while-revalidate. Covers/images: cache-first.
  * Book texts live in IndexedDB (managed by the app), not here. */
 
-const CACHE = "folio-v3";
+const CACHE = "folio-v4";
 const SHELL = [
   "./",
   "index.html",
