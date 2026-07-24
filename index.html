@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Folio — Stream thousands of free books with AI narration</title>
+<meta name="description" content="An open-source library of 75,000+ public-domain books and novels. Browse Netflix-style, read like a real book with page turns, and listen with realistic AI narration, character voices and word-by-word highlighting.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📖</text></svg>">
+<link rel="preconnect" href="https://gutendex.com">
+<link rel="preconnect" href="https://www.gutenberg.org">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ================= HOME / BROWSE ================= -->
+<div id="home-view">
+  <header id="topbar">
+    <div class="brand" id="brand-home" title="Home">
+      <span class="brand-icon">📖</span><span class="brand-name">Folio</span>
+    </div>
+    <div class="search-wrap">
+      <input id="search-input" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Search 75,000+ books, authors, genres…" aria-label="Search books">
+      <span class="search-icon">🔍</span>
+    </div>
+  </header>
+
+  <!-- Hero banner -->
+  <section id="hero" class="hidden">
+    <div id="hero-backdrop"></div>
+    <div class="hero-inner">
+      <img id="hero-cover" alt="" draggable="false">
+      <div class="hero-meta">
+        <div class="hero-kicker">Featured today</div>
+        <h1 id="hero-title"></h1>
+        <div id="hero-author"></div>
+        <p id="hero-desc"></p>
+        <div class="hero-actions">
+          <button id="hero-read" class="btn btn-primary">▶&nbsp; Read &amp; Listen</button>
+          <button id="hero-info" class="btn btn-ghost">ⓘ&nbsp; More info</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Search results (replaces rows while searching) -->
+  <section id="search-results" class="hidden">
+    <h2 id="search-results-title" class="row-title"></h2>
+    <div id="search-results-grid" class="results-grid"></div>
+    <div id="search-more-wrap"><button id="search-more" class="btn btn-ghost hidden">Load more</button></div>
+  </section>
+
+  <!-- Netflix-style rows -->
+  <main id="rows"></main>
+
+  <footer id="site-footer">
+    <p><strong>Folio</strong> is free &amp; open source. Every book comes from
+      <a href="https://www.gutenberg.org" target="_blank" rel="noopener">Project Gutenberg</a> — public-domain
+      literature digitized by volunteers — via the open
+      <a href="https://gutendex.com" target="_blank" rel="noopener">Gutendex</a> catalog.
+      Narration is generated on your device with the Web Speech API. No account, no tracking, no cost.</p>
+  </footer>
+</div>
+
+<!-- ================= BOOK DETAIL MODAL ================= -->
+<div id="modal-backdrop" class="hidden">
+  <div id="modal" role="dialog" aria-modal="true">
+    <button id="modal-close" class="icon-btn" aria-label="Close">✕</button>
+    <div id="modal-banner"></div>
+    <div class="modal-body">
+      <img id="modal-cover" alt="" draggable="false">
+      <div class="modal-meta">
+        <h2 id="modal-title"></h2>
+        <div id="modal-author" class="muted"></div>
+        <div id="modal-stats" class="muted small"></div>
+        <div class="modal-actions">
+          <button id="modal-read" class="btn btn-primary">▶&nbsp; Read &amp; Listen</button>
+        </div>
+        <div id="modal-resume" class="small hidden"></div>
+        <div id="modal-subjects"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= READER ================= -->
+<div id="reader-view" class="hidden">
+  <header id="reader-topbar">
+    <button id="reader-back" class="icon-btn" title="Back to library">←</button>
+    <div id="reader-book-title" class="ellipsis"></div>
+    <div class="reader-top-actions">
+      <button id="btn-fontsize" class="icon-btn" title="Text size">Aa</button>
+      <button id="btn-voices" class="icon-btn" title="Narration settings">🎙️</button>
+    </div>
+  </header>
+
+  <!-- Loading / pagination progress -->
+  <div id="reader-loading">
+    <div class="loader-book"><span></span></div>
+    <div id="reader-loading-text">Opening book…</div>
+    <div class="loader-bar"><div id="reader-loading-fill"></div></div>
+  </div>
+
+  <!-- The book -->
+  <div id="book-stage">
+    <div id="book" dir="ltr">
+      <div id="page-left" class="page">
+        <div class="page-content"></div>
+        <div class="page-num"></div>
+      </div>
+      <div id="page-right" class="page">
+        <div class="page-content"></div>
+        <div class="page-num"></div>
+      </div>
+      <!-- Turning leaf (created dynamically) -->
+      <div id="spine"></div>
+    </div>
+    <button id="nav-prev" class="page-nav" aria-label="Previous page">‹</button>
+    <button id="nav-next" class="page-nav" aria-label="Next page">›</button>
+  </div>
+
+  <!-- Audio / narration bar -->
+  <footer id="reader-bar">
+    <div id="progress-track"><div id="progress-fill"></div></div>
+    <div class="bar-controls">
+      <button id="btn-rewind" class="icon-btn" title="Previous sentence">⏮</button>
+      <button id="btn-play" class="play-btn" title="Play narration">▶</button>
+      <button id="btn-forward" class="icon-btn" title="Next sentence">⏭</button>
+      <div id="now-speaking" class="ellipsis muted small"></div>
+      <div id="page-indicator" class="muted small"></div>
+    </div>
+  </footer>
+
+  <!-- Narration settings panel -->
+  <div id="voice-panel" class="panel hidden">
+    <h3>🎙️ Narration</h3>
+    <label class="field">Narrator voice
+      <select id="sel-voice"></select>
+    </label>
+    <label class="field checkbox">
+      <input type="checkbox" id="chk-characters" checked>
+      Character voices <span class="muted small">— different voice &amp; pitch for dialogue</span>
+    </label>
+    <label class="field">Speed <span id="rate-label">1.0×</span>
+      <input type="range" id="rng-rate" min="0.6" max="1.6" step="0.05" value="0.95">
+    </label>
+    <label class="field checkbox">
+      <input type="checkbox" id="chk-autoflip" checked>
+      Turn pages automatically while narrating
+    </label>
+    <p class="muted small">Tip: voices marked “Natural” or “Online” sound most human. Chrome &amp; Edge ship the most realistic ones.</p>
+  </div>
+
+  <!-- Text size panel -->
+  <div id="font-panel" class="panel hidden">
+    <h3>Aa Text size</h3>
+    <div class="font-btns">
+      <button data-size="15">A−</button>
+      <button data-size="18" class="active">A</button>
+      <button data-size="22">A+</button>
+    </div>
+  </div>
+
+  <!-- Offscreen measurer used for pagination -->
+  <div id="measurer" aria-hidden="true"><div class="page-content" id="measurer-content"></div></div>
+</div>
+
+<div id="toast" class="hidden"></div>
+
+<script src="js/api.js"></script>
+<script src="js/narrator.js"></script>
+<script src="js/reader.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
