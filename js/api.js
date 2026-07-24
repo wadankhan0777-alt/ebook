@@ -7,11 +7,15 @@ const FolioAPI = (() => {
   const CATALOG = "https://gutendex.com/books";
 
   // CORS fallbacks: try direct first, then public CORS proxies.
+  // Gutendex sends CORS headers, so it loads directly; gutenberg.org does
+  // not, so book text needs a proxy. Several are tried at once (see
+  // fetchWithFallback) because any single free proxy may be down.
   const PROXIES = [
     (u) => u,
-    (u) => "https://corsproxy.io/?url=" + encodeURIComponent(u),
     (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+    (u) => "https://corsproxy.io/?url=" + encodeURIComponent(u),
     (u) => "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u),
+    (u) => "https://thingproxy.freeboard.io/fetch/" + u,
   ];
 
   /**
@@ -69,6 +73,8 @@ const FolioAPI = (() => {
     if (opts.ids) p.set("ids", opts.ids.join(","));
     p.set("languages", opts.languages || "en");
     if (opts.sort) p.set("sort", opts.sort);
+    if (opts.author_year_start) p.set("author_year_start", opts.author_year_start);
+    if (opts.author_year_end) p.set("author_year_end", opts.author_year_end);
     const data = await fetchWithFallback(CATALOG + "/?" + p.toString(), true);
     data.results = (data.results || []).filter((b) => plainTextUrl(b));
     return data;

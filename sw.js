@@ -2,12 +2,14 @@
  * App shell: stale-while-revalidate. Covers/images: cache-first.
  * Book texts live in IndexedDB (managed by the app), not here. */
 
-const CACHE = "folio-v2";
+const CACHE = "folio-v3";
 const SHELL = [
   "./",
   "index.html",
   "css/style.css",
   "js/vendor/fflate.js",
+  "js/vendor/kokoro.web.js",
+  "js/vendor/ort-wasm-simd-threaded.jsep.mjs",
   "js/api.js",
   "js/store.js",
   "js/import.js",
@@ -18,6 +20,7 @@ const SHELL = [
   "manifest.webmanifest",
   "icon.svg",
 ];
+// (the 21 MB ONNX wasm binary is runtime-cached on first neural use)
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -37,7 +40,20 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(req.url);
 
   if (url.origin === location.origin) {
-    // shell: serve cached instantly, refresh in the background
+    if (req.mode === "navigate") {
+      // the page itself: network-first, so updates always arrive;
+      // cached copy only when offline
+      e.respondWith(
+        fetch(req)
+          .then((res) => {
+            if (res.ok) caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {});
+            return res;
+          })
+          .catch(() => caches.match(req).then((c) => c || caches.match("index.html")))
+      );
+      return;
+    }
+    // static assets: serve cached instantly, refresh in the background
     e.respondWith(
       caches.match(req).then((cached) => {
         const refresh = fetch(req)
