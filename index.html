@@ -115,10 +115,12 @@
   <div id="book-stage">
     <div id="book" dir="ltr">
       <div id="page-left" class="page">
+        <div class="running-head"></div>
         <div class="page-content"></div>
         <div class="page-num"></div>
       </div>
       <div id="page-right" class="page">
+        <div class="running-head"></div>
         <div class="page-content"></div>
         <div class="page-num"></div>
       </div>
@@ -144,21 +146,38 @@
   <!-- Narration settings panel -->
   <div id="voice-panel" class="panel hidden">
     <h3>🎙️ Narration</h3>
-    <label class="field">Narrator voice
+    <label class="field">Engine
+      <select id="sel-engine">
+        <option value="neural">✨ Neural AI narrator — most realistic (one-time ~90 MB)</option>
+        <option value="system">⚡ Device voices — instant &amp; light</option>
+      </select>
+    </label>
+    <div id="neural-status" class="muted small hidden"></div>
+    <label class="field" id="field-neural-voice">Narrator voice
+      <select id="sel-neural-voice"></select>
+    </label>
+    <label class="field hidden" id="field-sys-voice">Narrator voice
       <select id="sel-voice"></select>
     </label>
     <label class="field checkbox">
       <input type="checkbox" id="chk-characters" checked>
-      Character voices <span class="muted small">— different voice &amp; pitch for dialogue</span>
+      Character voices <span class="muted small">— each speaker gets their own voice</span>
     </label>
     <label class="field">Speed <span id="rate-label">1.0×</span>
       <input type="range" id="rng-rate" min="0.6" max="1.6" step="0.05" value="0.95">
     </label>
     <label class="field checkbox">
+      <input type="checkbox" id="chk-music" checked>
+      🎵 Mood music <span class="muted small">— ambience follows the story's emotion</span>
+    </label>
+    <label class="field">Music volume
+      <input type="range" id="rng-music" min="0" max="0.4" step="0.02" value="0.12">
+    </label>
+    <label class="field checkbox">
       <input type="checkbox" id="chk-autoflip" checked>
       Turn pages automatically while narrating
     </label>
-    <p class="muted small">Tip: voices marked “Natural” or “Online” sound most human. Chrome &amp; Edge ship the most realistic ones.</p>
+    <p class="muted small">The neural narrator runs entirely on your device (open-source Kokoro AI) — nothing is sent anywhere. First use downloads the voice model once; after that it works offline.</p>
   </div>
 
   <!-- Text size panel -->
@@ -182,6 +201,7 @@
 <script src="js/store.js"></script>
 <script src="js/import.js"></script>
 <script src="js/narrator.js"></script>
+<script src="js/music.js"></script>
 <script src="js/reader.js"></script>
 <script src="js/app.js"></script>
 </body>

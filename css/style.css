@@ -245,15 +245,34 @@ a:hover { text-decoration: underline; }
   position: relative; width: min(1060px, 100%); height: 100%; max-height: 720px;
   display: flex; transform-style: preserve-3d;
   filter: drop-shadow(0 30px 40px rgba(0,0,0,.55));
+  /* leather binding + stacked page edges */
+  box-shadow:
+    0 0 0 6px #2e2213, 0 0 0 8px #4a3823, 0 0 0 9px #1c1509,
+    -14px 4px 0 -6px #e3d8bf, -17px 8px 0 -6px #d6c9ab,
+    14px 4px 0 -6px #e3d8bf, 17px 8px 0 -6px #d6c9ab;
+  border-radius: 4px;
 }
 .page {
   flex: 1; position: relative; background: var(--paper); overflow: hidden;
   display: flex; flex-direction: column;
 }
+/* faint paper grain + vignette */
+.page::after, .leaf .leaf-face::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    repeating-linear-gradient(2deg, rgba(120,95,55,.022) 0 2px, transparent 2px 5px),
+    radial-gradient(120% 100% at 50% 45%, transparent 55%, rgba(96,72,38,.10) 100%);
+}
 #page-left { border-radius: 12px 2px 2px 12px;
   background: linear-gradient(90deg, var(--paper) 0%, var(--paper) 92%, #e7ddc6 99%, #d9cdb2 100%); }
 #page-right { border-radius: 2px 12px 12px 2px;
   background: linear-gradient(90deg, #d9cdb2 0%, #e7ddc6 1%, var(--paper) 8%, var(--paper) 100%); }
+.running-head {
+  position: absolute; top: 14px; left: 44px; right: 44px; text-align: center;
+  font-family: Georgia, serif; font-variant: small-caps; letter-spacing: .18em;
+  font-size: .72rem; color: #a2916f; pointer-events: none; z-index: 2;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
 #spine {
   position: absolute; left: 50%; top: 0; bottom: 0; width: 40px; transform: translateX(-50%);
   background: linear-gradient(90deg, transparent, rgba(60,45,20,.18) 45%, rgba(60,45,20,.28) 50%, rgba(60,45,20,.18) 55%, transparent);
@@ -261,14 +280,24 @@ a:hover { text-decoration: underline; }
 }
 .page-content {
   flex: 1; overflow: hidden; padding: 46px 44px 12px;
-  font-family: Georgia, "Times New Roman", serif; font-size: 18px; line-height: 1.65;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  font-size: 18px; line-height: 1.65;
   color: var(--ink); text-align: justify; hyphens: auto; -webkit-hyphens: auto;
+  position: relative; z-index: 1;
 }
 .page-content p { margin: 0 0 0.9em; text-indent: 1.6em; }
 .page-content p.no-indent { text-indent: 0; }
 .page-content h2.chapter {
-  font-size: 1.35em; text-align: center; text-indent: 0; margin: 1.2em 0 1.4em;
+  font-size: 1.35em; text-align: center; text-indent: 0; margin: 1.2em 0 1.1em;
   font-variant: small-caps; letter-spacing: .08em; color: #4a3d28;
+}
+.page-content h2.chapter::after {
+  content: ""; display: block; width: 84px; height: 1px; margin: .55em auto 0;
+  background: linear-gradient(90deg, transparent, #a2916f 20%, #a2916f 80%, transparent);
+}
+.page-content p.drop::first-letter {
+  float: left; font-size: 3.05em; line-height: .82; padding: .04em .09em 0 0;
+  font-family: Georgia, serif; color: #7a5c22;
 }
 .page-num {
   flex: 0 0 36px; height: 36px; display: flex; align-items: flex-start; justify-content: center;
@@ -378,7 +407,9 @@ input[type=range] { accent-color: var(--accent); }
   body.single-page #page-right { border-radius: 8px; background: var(--paper); }
   body.single-page .leaf { width: 100%; }
   body.single-page .leaf.forward { left: 0; }
-  .page-content { padding: 28px 24px 8px; font-size: 17px; }
-  #measurer .page-content { padding: 28px 24px 8px; }
+  .page-content { padding: 34px 24px 8px; font-size: 17px; }
+  #measurer .page-content { padding: 34px 24px 8px; }
+  .running-head { left: 24px; right: 24px; top: 9px; font-size: .66rem; }
+  #book { box-shadow: 0 0 0 5px #2e2213, 0 0 0 7px #4a3823, 8px 3px 0 -4px #e3d8bf, 11px 6px 0 -4px #d6c9ab; }
   #now-speaking { display: none; }
 }

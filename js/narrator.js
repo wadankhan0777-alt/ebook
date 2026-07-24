@@ -1,33 +1,75 @@
 /* ============================================================
- * narrator.js — realistic AI narration built on the Web Speech
- * API. Picks the most natural voice available on the device,
- * gives dialogue its own character voices (stable per speaker,
- * with distinct pitch/rate), fires word-level callbacks for
- * highlighting, and falls back to timing estimation when a
- * voice engine does not emit word boundaries.
+ * narrator.js — the voice of Folio, with two engines:
+ *
+ *  ✨ NEURAL — Kokoro-82M (open-source, Apache-2.0), a frontier
+ *     on-device TTS run 100% in the browser via transformers.js.
+ *     Deeply realistic: natural intonation, breaths and phrasing.
+ *     Different neural voices are cast per character in dialogue.
+ *
+ *  ⚡ SYSTEM — the Web Speech API voices built into the device,
+ *     instant and lightweight; used as automatic fallback.
+ *
+ * Both engines narrate sentence by sentence with word-level
+ * callbacks for highlighting, breathing pauses at sentence and
+ * paragraph boundaries, and stable character voice casting.
  * ============================================================ */
+
+/** One shared AudioContext for narration + mood music. */
+const AudioHub = {
+  _ctx: null,
+  ctx() {
+    if (!this._ctx) this._ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this._ctx.state === "suspended") this._ctx.resume().catch(() => {});
+    return this._ctx;
+  },
+};
+
+const KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+const KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
+
+const NEURAL_VOICES = [
+  { id: "af_heart",    label: "Heart — warm US female ★" },
+  { id: "af_bella",    label: "Bella — expressive US female" },
+  { id: "am_michael",  label: "Michael — deep US male" },
+  { id: "bf_emma",     label: "Emma — gentle British female" },
+  { id: "bm_george",   label: "George — classic British male" },
+  { id: "af_nicole",   label: "Nicole — soft-spoken US female" },
+  { id: "am_fenrir",   label: "Fenrir — intense US male" },
+  { id: "bf_isabella", label: "Isabella — bright British female" },
+  { id: "bm_lewis",    label: "Lewis — steady British male" },
+  { id: "am_puck",     label: "Puck — playful US male" },
+];
 
 class Narrator {
   constructor() {
     this.synth = window.speechSynthesis;
-    this.voices = [];            // ranked English voices, best first
-    this.narratorVoice = null;   // user-selectable
+    this.voices = [];              // ranked system voices
+    this.narratorVoice = null;     // system narrator voice
     this.characterVoices = true;
     this.rate = 0.95;
 
-    this.book = null;            // parsed book from FolioAPI.parseBook
+    // engine: 'neural' (Kokoro) or 'system' (Web Speech)
+    this.engine = "neural";
+    this.neuralVoice = "af_heart";
+    this.neural = { status: "idle", progress: 0, tts: null, error: null };
+    this._ncache = new Map();      // generated audio cache
+    this._genChain = Promise.resolve(); // serialize generations
+    this._source = null;           // playing AudioBufferSourceNode
+
+    this.book = null;
     this.sentenceIdx = 0;
     this.playing = false;
-    this._utter = null;          // keep a ref (Chrome GC workaround)
+    this._utter = null;
     this._estimator = null;
-    this._speakerMap = new Map();// speaker name -> {voice,pitch,rate}
-    this._session = 0;           // invalidates stale async callbacks
+    this._speakerMap = new Map();
+    this._session = 0;
 
     // callbacks
-    this.onWord = null;          // (globalWordIndex)
-    this.onSentence = null;      // (sentenceIdx)
-    this.onEnd = null;           // whole book finished
-    this.onState = null;         // (isPlaying)
+    this.onWord = null;
+    this.onSentence = null;
+    this.onEnd = null;
+    this.onState = null;
+    this.onEngineStatus = null;    // ({engine, status, progress, error})
 
     if (this.synth) {
       this._loadVoices();
@@ -35,9 +77,9 @@ class Narrator {
     }
   }
 
-  get supported() { return !!this.synth; }
+  get supported() { return !!(this.synth || window.WebAssembly); }
 
-  /* ---------- voice discovery & ranking ---------- */
+  /* ================= engines & voices ================= */
 
   _loadVoices() {
     const all = this.synth.getVoices() || [];
@@ -45,14 +87,14 @@ class Narrator {
     const score = (v) => {
       const n = v.name.toLowerCase();
       let s = 0;
-      if (n.includes("natural")) s += 60;          // Edge neural voices
+      if (n.includes("natural")) s += 60;
       if (n.includes("neural")) s += 55;
       if (n.includes("online")) s += 40;
       if (n.includes("premium") || n.includes("enhanced")) s += 35;
-      if (n.includes("google")) s += 30;           // Chrome remote voices
+      if (n.includes("google")) s += 30;
       if (n.includes("siri")) s += 25;
       if (/^en[-_](us|gb)/i.test(v.lang)) s += 10;
-      if (v.localService === false) s += 8;        // cloud voices sound better
+      if (v.localService === false) s += 8;
       if (n.includes("compact")) s -= 20;
       return s;
     };
@@ -64,54 +106,120 @@ class Narrator {
     this.onVoicesReady && this.onVoicesReady(this.voices);
   }
 
+  setEngine(engine) {
+    if (engine === this.engine) return;
+    this.engine = engine;
+    this._speakerMap.clear();
+    this._ncache.clear();
+    if (this.playing) this._restartCurrent();
+    this._emitEngine();
+  }
+
   setNarratorVoice(voice) {
     this.narratorVoice = voice;
     this._speakerMap.clear();
-    if (this.playing) this._restartCurrent();
+    if (this.playing && this.engine === "system") this._restartCurrent();
+  }
+
+  setNeuralVoice(id) {
+    this.neuralVoice = id;
+    this._speakerMap.clear();
+    this._ncache.clear();
+    if (this.playing && this.engine === "neural") this._restartCurrent();
   }
 
   setRate(rate) {
     this.rate = rate;
+    this._ncache.clear();
     if (this.playing) this._restartCurrent();
   }
 
-  /** Stable, distinct voice+pitch per character name. */
+  _emitEngine() {
+    this.onEngineStatus &&
+      this.onEngineStatus({ engine: this.engine, ...this.neural });
+  }
+
+  /** Load Kokoro once; resolves true when ready, false on failure. */
+  async ensureNeural() {
+    if (this.neural.status === "ready") return true;
+    if (this.neural.status === "error") return false;
+    if (this._neuralLoading) return this._neuralLoading;
+    this.neural.status = "loading";
+    this.neural.progress = 0;
+    this._emitEngine();
+    this._neuralLoading = (async () => {
+      try {
+        const mod = await import(KOKORO_CDN);
+        const device = navigator.gpu ? "webgpu" : "wasm";
+        const dtype = device === "webgpu" ? "fp32" : "q8";
+        const seen = {};
+        this.neural.tts = await mod.KokoroTTS.from_pretrained(KOKORO_MODEL, {
+          dtype,
+          device,
+          progress_callback: (e) => {
+            if (e.status === "progress" && e.total) {
+              seen[e.file] = [e.loaded, e.total];
+              let l = 0, t = 0;
+              for (const [a, b] of Object.values(seen)) { l += a; t += b; }
+              this.neural.progress = Math.round((l / t) * 100);
+              this._emitEngine();
+            }
+          },
+        });
+        this.neural.status = "ready";
+        this._emitEngine();
+        return true;
+      } catch (e) {
+        this.neural.status = "error";
+        this.neural.error = e && e.message;
+        this._emitEngine();
+        return false;
+      }
+    })();
+    return this._neuralLoading;
+  }
+
+  /** Stable, distinct voice per character name. */
   _voiceForSpeaker(name) {
     const key = (name || "character").toLowerCase();
     if (this._speakerMap.has(key)) return this._speakerMap.get(key);
-
-    const pool = this.voices.filter((v) => v !== this.narratorVoice).slice(0, 6);
-    const variants = [
-      { pitch: 1.25, rate: 1.02 },
-      { pitch: 0.8,  rate: 0.95 },
-      { pitch: 1.4,  rate: 1.05 },
-      { pitch: 0.65, rate: 0.9  },
-      { pitch: 1.1,  rate: 1.0  },
-      { pitch: 0.9,  rate: 1.06 },
-    ];
     let h = 0;
     for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-    const idx = this._speakerMap.size % variants.length;
-    const v = {
-      voice: pool.length ? pool[h % pool.length] : this.narratorVoice,
-      ...variants[(h + idx) % variants.length],
-    };
+
+    let v;
+    if (this.engine === "neural") {
+      const pool = NEURAL_VOICES.map((x) => x.id).filter((id) => id !== this.neuralVoice);
+      v = { neural: pool[h % pool.length] };
+    } else {
+      const pool = this.voices.filter((x) => x !== this.narratorVoice).slice(0, 6);
+      const variants = [
+        { pitch: 1.25, rate: 1.02 }, { pitch: 0.8, rate: 0.95 },
+        { pitch: 1.4, rate: 1.05 },  { pitch: 0.65, rate: 0.9 },
+        { pitch: 1.1, rate: 1.0 },   { pitch: 0.9, rate: 1.06 },
+      ];
+      v = {
+        voice: pool.length ? pool[h % pool.length] : this.narratorVoice,
+        ...variants[(h + this._speakerMap.size) % variants.length],
+      };
+    }
     this._speakerMap.set(key, v);
     return v;
   }
 
-  /* ---------- playback ---------- */
+  /* ================= playback ================= */
 
   load(parsedBook, startSentence = 0) {
     this.stop();
     this.book = parsedBook;
     this.sentenceIdx = startSentence;
     this._speakerMap.clear();
+    this._ncache.clear();
   }
 
   play() {
     if (!this.supported || !this.book) return;
     if (this.playing) return;
+    AudioHub.ctx(); // unlock audio on user gesture
     this.playing = true;
     this.onState && this.onState(true);
     this._speakSentence(this.sentenceIdx);
@@ -122,7 +230,8 @@ class Narrator {
     this.playing = false;
     this._session++;
     this._clearEstimator();
-    this.synth.cancel();
+    this._stopSource();
+    this.synth && this.synth.cancel();
     this.onState && this.onState(false);
   }
 
@@ -130,6 +239,7 @@ class Narrator {
     this.playing = false;
     this._session++;
     this._clearEstimator();
+    this._stopSource();
     this.synth && this.synth.cancel();
     this.onState && this.onState(false);
   }
@@ -154,7 +264,14 @@ class Narrator {
     this.play();
   }
 
-  /* ---------- internals ---------- */
+  _stopSource() {
+    if (this._source) {
+      try { this._source.stop(); } catch { /* already stopped */ }
+      this._source = null;
+    }
+  }
+
+  /* ================= sentence loop ================= */
 
   _speakSentence(idx) {
     if (!this.playing) return;
@@ -169,31 +286,155 @@ class Narrator {
     this.onSentence && this.onSentence(idx);
 
     const session = ++this._session;
-    const segments = sentences[idx].segments.slice();
+    const sentence = sentences[idx];
+    const segments = sentence.segments.slice();
+    const alive = () => session === this._session && this.playing;
+
+    const finishSentence = () => {
+      if (!alive()) return;
+      // A breath: longer at paragraph ends and after trailing punctuation.
+      const nxt = sentences[idx + 1];
+      const lastWord = this.book.words[sentence.end] || "";
+      let pause = 260;
+      if (nxt && nxt.para !== sentence.para) pause = 620;
+      else if (/[!?…]["'”’]*$/.test(lastWord)) pause = 380;
+      setTimeout(() => { if (alive()) this._speakSentence(idx + 1); }, pause / this.rate);
+    };
+
     const speakNextSegment = () => {
-      if (session !== this._session || !this.playing) return;
+      if (!alive()) return;
       const seg = segments.shift();
-      if (!seg) {
-        // brief natural pause between sentences at paragraph ends
-        this._speakSentence(idx + 1);
-        return;
-      }
-      this._speakSegment(seg, session, speakNextSegment);
+      if (!seg) { finishSentence(); return; }
+      const step = () => setTimeout(speakNextSegment, 90);
+      if (this.engine === "neural") this._neuralSpeak(seg, session, step);
+      else this._systemSpeak(seg, session, step);
     };
     speakNextSegment();
   }
 
-  _speakSegment(seg, session, done) {
-    const words = this.book.words;
-    // Build the spoken string, remembering each word's char offset so
-    // boundary events can be mapped back to a global word index.
-    let text = "";
-    const offsets = []; // [charStart, globalWordIndex]
+  /** Spoken words for a range, with quote/markup characters removed. */
+  _spokenWords(seg) {
+    const out = [];
     for (let g = seg.start; g <= seg.end; g++) {
-      let w = words[g].replace(/[“”"«»_]/g, "");
-      if (!w) w = " ";
+      let w = this.book.words[g].replace(/[“”"«»_*]/g, "");
+      out.push({ g, w });
+    }
+    return out;
+  }
+
+  /* ================= neural engine (Kokoro) ================= */
+
+  async _neuralSpeak(seg, session, done) {
+    const ok = await this.ensureNeural();
+    if (session !== this._session || !this.playing) return;
+    if (!ok) { this._systemSpeak(seg, session, done); return; } // graceful fallback
+
+    const words = this._spokenWords(seg);
+    const text = words.map((x) => x.w).filter(Boolean).join(" ");
+    if (!text.trim()) { done(); return; }
+
+    const isDialogue = seg.type === "dialogue" && this.characterVoices;
+    const voice = isDialogue ? this._voiceForSpeaker(seg.speaker).neural : this.neuralVoice;
+
+    let clip;
+    try {
+      clip = await this._generate(text, voice);
+    } catch {
+      if (session !== this._session || !this.playing) return;
+      done(); // skip a problem segment rather than stalling the book
+      return;
+    }
+    if (session !== this._session || !this.playing) return;
+
+    // Warm the cache for what comes next while this clip plays.
+    this._prefetch(seg);
+
+    const ctx = AudioHub.ctx();
+    const buffer = ctx.createBuffer(1, clip.samples.length, clip.rate);
+    buffer.getChannelData(0).set(clip.samples);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.playbackRate.value = 1;
+    source.connect(ctx.destination);
+    this._source = source;
+
+    // Word highlighting: distribute duration across words by weight.
+    const weights = words.map((x) => x.w.length + 1.4 + (/[,;:.!?…]$/.test(x.w) ? 2.2 : 0));
+    const totalW = weights.reduce((a, b) => a + b, 0) || 1;
+    const duration = buffer.duration;
+    const t0 = ctx.currentTime;
+    if (this.onWord) this.onWord(seg.start);
+    this._clearEstimator();
+    this._estimator = setInterval(() => {
+      if (session !== this._session) { this._clearEstimator(); return; }
+      const frac = Math.min(1, (ctx.currentTime - t0) / duration);
+      let acc = 0, wi = 0;
+      for (; wi < weights.length - 1; wi++) {
+        acc += weights[wi];
+        if (acc / totalW > frac) break;
+      }
+      if (this.onWord) this.onWord(words[wi].g);
+    }, 90);
+
+    source.onended = () => {
+      if (session !== this._session) return;
+      this._clearEstimator();
+      this._source = null;
+      done();
+    };
+    source.start();
+  }
+
+  /** Serialize + cache Kokoro generations. */
+  _generate(text, voice) {
+    const key = voice + "|" + this.rate.toFixed(2) + "|" + text;
+    if (this._ncache.has(key)) return this._ncache.get(key);
+    const p = (this._genChain = this._genChain.catch(() => {}).then(async () => {
+      const audio = await this.neural.tts.generate(text, {
+        voice,
+        speed: Math.max(0.5, Math.min(2, this.rate)),
+      });
+      return { samples: audio.audio, rate: audio.sampling_rate };
+    }));
+    this._ncache.set(key, p);
+    p.catch(() => this._ncache.delete(key));
+    if (this._ncache.size > 14) {
+      const first = this._ncache.keys().next().value;
+      this._ncache.delete(first);
+    }
+    return p;
+  }
+
+  /** Pre-generate the next couple of segments so playback never gaps. */
+  _prefetch(afterSeg) {
+    const sentences = this.book.sentences;
+    let queued = 0;
+    outer:
+    for (let si = this.sentenceIdx; si < sentences.length && queued < 3; si++) {
+      for (const s of sentences[si].segments) {
+        if (s.start <= afterSeg.start) continue;
+        const words = this._spokenWords(s);
+        const text = words.map((x) => x.w).filter(Boolean).join(" ");
+        if (!text.trim()) continue;
+        const isDialogue = s.type === "dialogue" && this.characterVoices;
+        const voice = isDialogue ? this._voiceForSpeaker(s.speaker).neural : this.neuralVoice;
+        this._generate(text, voice).catch(() => {});
+        if (++queued >= 3) break outer;
+      }
+    }
+  }
+
+  /* ================= system engine (Web Speech) ================= */
+
+  _systemSpeak(seg, session, done) {
+    if (!this.synth) { done(); return; }
+    const words = this._spokenWords(seg);
+    let text = "";
+    const offsets = [];
+    for (const x of words) {
+      const w = x.w || " ";
       if (text) text += " ";
-      offsets.push([text.length, g]);
+      offsets.push([text.length, x.g]);
       text += w;
     }
     if (!text.trim()) { done(); return; }
@@ -223,16 +464,13 @@ class Narrator {
     u.onstart = () => {
       if (session !== this._session) return;
       if (this.onWord) this.onWord(seg.start);
-      // Fallback highlighting for engines without boundary events.
       const startedAt = performance.now();
-      const charsPerSec = 15 * u.rate;
-      const durationMs = (text.length / charsPerSec) * 1000;
+      const durationMs = (text.length / (15 * u.rate)) * 1000;
       this._clearEstimator();
       this._estimator = setInterval(() => {
         if (sawBoundary || session !== this._session) { this._clearEstimator(); return; }
         const frac = Math.min(1, (performance.now() - startedAt) / durationMs);
-        const char = Math.floor(frac * text.length);
-        const g = this._wordAtChar(offsets, char);
+        const g = this._wordAtChar(offsets, Math.floor(frac * text.length));
         if (g != null && this.onWord) this.onWord(g);
       }, 220);
     };
@@ -245,7 +483,7 @@ class Narrator {
       if (session !== this._session) return;
       this._clearEstimator();
       if (e.error === "interrupted" || e.error === "canceled") return;
-      done(); // skip past problem segments rather than stalling
+      done();
     };
 
     this._utter = u;

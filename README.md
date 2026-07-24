@@ -9,8 +9,11 @@ No accounts. No servers. No cost. Just books.
 - **Netflix-style browsing** — a featured hero book, horizontally scrolling shelves for every genre (mystery, sci-fi, romance, horror, poetry…), hover cards, and a search bar covering the entire 75,000+ book catalog.
 - **Personal recommendations** — "Continue reading" and "Because you read…" shelves built from your local reading history (stored only on your device).
 - **A real book, not a PDF** — text flows left-to-right into a two-page spread with page numbers and a spine. Turn pages by clicking, swiping, or **dragging the corner like paper**, with a 3D page-flip animation. Single-page mode on phones.
-- **Realistic AI narration** — the most natural voice on your device narrates the book sentence by sentence. On Chrome and Edge this uses neural "Natural/Online" voices that sound remarkably human.
-- **Character voices** — dialogue is detected automatically, speakers are identified from the prose ("…," said Alice), and each character gets their own consistent voice, pitch, and pace, distinct from the narrator.
+- **Neural AI narration (Kokoro)** — the default narrator is [Kokoro-82M](https://github.com/hexgrad/kokoro), a frontier open-source neural TTS that runs 100% in your browser (WebGPU, or WASM fallback) via transformers.js. Genuinely human phrasing, breaths, and intonation; ten narrator voices to choose from; nothing is ever sent to a server, and after a one-time ~90 MB model download it works offline. Device system voices remain available as a light/instant engine and automatic fallback.
+- **Character voices** — dialogue is detected automatically, speakers are identified from the prose ("…," said the baker), and each character is cast with their own consistent neural voice, distinct from the narrator.
+- **Breaths & pacing** — narration breathes: short pauses between sentences, longer ones at paragraph breaks and after exclamations, so chapters flow like a human reading aloud.
+- **Mood music** — an optional generative WebAudio score follows the story's emotion: a dark pulsing drone under tense scenes, bright major shimmer for joyful ones, a slow lament for grief. No audio files, all synthesized live, with hysteresis so the mood never flickers.
+- **Starts at the story** — title pages, author credits, and tables of contents are detected and skipped: narration and the opening page begin at chapter one (you can still flip back to the front matter).
 - **Word-by-word highlighting** — every word lights up as it's spoken, and pages turn automatically as narration advances.
 - **Reads only the book** — Project Gutenberg headers, licenses, transcriber notes, and illustration tags are stripped so narration starts at the story.
 - **Remembers your place** — progress is saved per book; reopening resumes exactly where you stopped.
@@ -42,7 +45,9 @@ python3 -m http.server 8000
 | Book text | Fetched as plain text from [Project Gutenberg](https://www.gutenberg.org) (with CORS-proxy fallbacks), then cleaned to keep only reading content |
 | Pagination | Text is measured against the real page geometry and split into true pages; chapters always start on a fresh page |
 | Page turns | A 3D CSS "leaf" with front/back faces, driven by pointer drag or animation |
-| Narration | Web Speech API (`speechSynthesis`) — sentence-chained utterances, quote-aware dialogue segmentation, speaker attribution, per-character voice/pitch, word-boundary events for highlighting (with timing estimation as a fallback) |
+| Narration | Two engines: **Kokoro-82M** neural TTS on-device (kokoro-js + transformers.js, WebGPU/WASM), and Web Speech API system voices. Sentence-chained playback, quote-aware dialogue segmentation, speaker attribution, per-character voices, breathing pauses, word-timing for highlighting |
+| Mood music | Generative WebAudio pads/drones driven by a lexicon-based mood analysis of the narrated text |
+| Book fetch | All sources (catalog URL + Gutenberg mirrors, direct + CORS proxies) are **raced in parallel**; first good response wins, the rest abort |
 | Your data | `localStorage` only — nothing leaves your device |
 
 ## 📁 Project layout

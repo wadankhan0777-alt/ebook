@@ -379,6 +379,23 @@
     if (!fontPanel.contains(e.target) && e.target.id !== "btn-fontsize") fontPanel.classList.add("hidden");
   });
 
+  /* ---- persisted settings ---- */
+  const Settings = {
+    load() { try { return JSON.parse(localStorage.getItem("folio:settings")) || {}; } catch { return {}; } },
+    save(patch) {
+      const s = { ...this.load(), ...patch };
+      try { localStorage.setItem("folio:settings", JSON.stringify(s)); } catch { /* ok */ }
+    },
+  };
+  const cfg = Settings.load();
+  if (cfg.engine) narrator.engine = cfg.engine;
+  if (cfg.neuralVoice) narrator.neuralVoice = cfg.neuralVoice;
+  if (cfg.rate) { narrator.rate = cfg.rate; $("rng-rate").value = cfg.rate; $("rate-label").textContent = (+cfg.rate).toFixed(2).replace(/0$/, "") + "×"; }
+  if (cfg.characters === false) { narrator.characterVoices = false; $("chk-characters").checked = false; }
+  if (cfg.autoflip === false) { reader.autoFlip = false; $("chk-autoflip").checked = false; }
+  if (cfg.music === false) { MoodMusic.setEnabled(false); $("chk-music").checked = false; }
+  if (cfg.musicVol != null) { MoodMusic.setVolume(cfg.musicVol); $("rng-music").value = cfg.musicVol; }
+
   function fillVoiceSelect(voices) {
     const sel = $("sel-voice");
     sel.innerHTML = "";
@@ -397,19 +414,73 @@
   narrator.onVoicesReady = fillVoiceSelect;
   if (narrator.voices.length) fillVoiceSelect(narrator.voices);
 
+  // neural voice list
+  {
+    const sel = $("sel-neural-voice");
+    for (const v of NEURAL_VOICES) {
+      const opt = document.createElement("option");
+      opt.value = v.id;
+      opt.textContent = v.label;
+      sel.appendChild(opt);
+    }
+    sel.value = narrator.neuralVoice;
+  }
+
+  function syncEngineUI() {
+    $("sel-engine").value = narrator.engine;
+    $("field-neural-voice").classList.toggle("hidden", narrator.engine !== "neural");
+    $("field-sys-voice").classList.toggle("hidden", narrator.engine !== "system");
+    const st = $("neural-status");
+    if (narrator.engine === "neural" && narrator.neural.status === "loading") {
+      st.textContent = `Downloading AI voice model… ${narrator.neural.progress}%`;
+      st.classList.remove("hidden");
+    } else if (narrator.engine === "neural" && narrator.neural.status === "error") {
+      st.textContent = "AI voice couldn't load on this device — device voices will be used.";
+      st.classList.remove("hidden");
+    } else st.classList.add("hidden");
+  }
+  syncEngineUI();
+  {
+    // the reader installed its handler at construction — chain both
+    const readerHandler = narrator.onEngineStatus;
+    narrator.onEngineStatus = (s) => { readerHandler && readerHandler(s); syncEngineUI(); };
+  }
+
+  $("sel-engine").addEventListener("change", (e) => {
+    narrator.setEngine(e.target.value);
+    Settings.save({ engine: e.target.value });
+    syncEngineUI();
+    if (e.target.value === "neural") narrator.ensureNeural();
+  });
+  $("sel-neural-voice").addEventListener("change", (e) => {
+    narrator.setNeuralVoice(e.target.value);
+    Settings.save({ neuralVoice: e.target.value });
+  });
   $("sel-voice").addEventListener("change", (e) => {
     const v = narrator.voices[+e.target.value];
     if (v) narrator.setNarratorVoice(v);
   });
   $("chk-characters").addEventListener("change", (e) => {
     narrator.characterVoices = e.target.checked;
+    Settings.save({ characters: e.target.checked });
   });
   $("chk-autoflip").addEventListener("change", (e) => {
     reader.autoFlip = e.target.checked;
+    Settings.save({ autoflip: e.target.checked });
+  });
+  $("chk-music").addEventListener("change", (e) => {
+    MoodMusic.setEnabled(e.target.checked);
+    Settings.save({ music: e.target.checked });
+    if (e.target.checked && narrator.playing) MoodMusic.start();
+  });
+  $("rng-music").addEventListener("input", (e) => {
+    MoodMusic.setVolume(+e.target.value);
+    Settings.save({ musicVol: +e.target.value });
   });
   $("rng-rate").addEventListener("input", (e) => {
     const r = +e.target.value;
     $("rate-label").textContent = r.toFixed(2).replace(/0$/, "") + "×";
+    Settings.save({ rate: r });
     clearTimeout(window._rateTimer);
     window._rateTimer = setTimeout(() => narrator.setRate(r), 250);
   });
