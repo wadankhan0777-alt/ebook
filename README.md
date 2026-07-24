@@ -14,6 +14,9 @@ No accounts. No servers. No cost. Just books.
 - **Word-by-word highlighting** — every word lights up as it's spoken, and pages turn automatically as narration advances.
 - **Reads only the book** — Project Gutenberg headers, licenses, transcriber notes, and illustration tags are stripped so narration starts at the story.
 - **Remembers your place** — progress is saved per book; reopening resumes exactly where you stopped.
+- **Works offline, installs like an app** — it's a PWA: add it to your phone's home screen, and every book you open or download is stored on-device (IndexedDB) for instant, internet-free reading and listening. A "My downloads" shelf collects them.
+- **Bring your own books** — import any `.epub` or `.txt` you own with the ＋ Import button; imported books get the same page-flip reader, narration, and highlighting.
+- **Fast on big books** — a novel of 190,000+ words opens in under a second: the first page shows immediately while the rest is laid out in the background, and the finished layout is cached per screen size.
 
 ## 🚀 Run it
 
@@ -45,13 +48,22 @@ python3 -m http.server 8000
 ## 📁 Project layout
 
 ```
-index.html        app shell: browse view, modal, reader, panels
-css/style.css     Netflix-style browse UI + paper book styling
-js/api.js         catalog access, text download/cleanup, book parsing
-js/narrator.js    narration engine (voices, characters, word events)
-js/reader.js      pagination, page-flip, highlighting, progress
-js/app.js         home rows, hero, search, modal, settings
+index.html          app shell: browse view, modal, reader, panels
+css/style.css       Netflix-style browse UI + paper book styling
+js/api.js           catalog access, text download/cleanup, book parsing
+js/narrator.js      narration engine (voices, characters, word events)
+js/reader.js        progressive pagination, page-flip, highlighting, progress
+js/app.js           home rows, hero, search, modal, settings, install
+js/store.js         on-device book storage (IndexedDB) for offline use
+js/import.js        .epub / .txt import (EPUB unzipped with fflate)
+js/vendor/fflate.js vendored MIT-licensed unzip library
+sw.js               service worker: offline app shell + cover cache
+manifest.webmanifest / icon.svg   PWA install metadata
 ```
+
+## 📚 About modern / copyrighted novels
+
+Folio's built-in catalog is public-domain only — that's what keeps it legal and free. Recent commercial novels and webnovels (e.g. titles on Webnovel or Royal Road) are under copyright and can't be bundled. If you own a copy of a modern book as `.epub` or `.txt`, use **＋ Import** — it becomes a fully narrated, page-flipping, offline book on your device, and never leaves it.
 
 ## 🎧 Voice quality notes
 

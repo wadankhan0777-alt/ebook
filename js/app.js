@@ -111,6 +111,24 @@
     const rows = $("rows");
     rows.innerHTML = "";
 
+    // My downloads — stored on-device, work fully offline
+    const dlHolder = document.createElement("div");
+    rows.appendChild(dlHolder);
+    BookStore.list().then((stored) => {
+      if (!stored.length) return;
+      const row = rowShell("My downloads", "saved on this device · works offline");
+      const scroller = row.querySelector(".row-scroller");
+      row.querySelector(".row-skeleton").remove();
+      scroller.classList.remove("hidden");
+      for (const meta of stored.slice(0, 24)) {
+        const rec = BookStore.recordFrom(meta);
+        bookCache.set(rec.id, rec);
+        const prog = Progress.get(rec.id);
+        scroller.appendChild(cardEl(rec, prog ? prog.pct : 0));
+      }
+      dlHolder.appendChild(row);
+    }).catch(() => {});
+
     // Continue reading
     const history = Progress.all().filter((h) => h.pct > 0 && h.pct < 99);
     if (history.length) {
@@ -270,8 +288,38 @@
     }
 
     $("modal-read").onclick = () => { closeModal(); openReader(book); };
+    refreshDownloadBtn(book);
     $("modal-backdrop").classList.remove("hidden");
     document.body.style.overflow = "hidden";
+  }
+
+  async function refreshDownloadBtn(book) {
+    const btn = $("modal-download");
+    btn.disabled = false;
+    const stored = await BookStore.has(book.id).catch(() => false);
+    if (stored) {
+      btn.textContent = "🗑 Remove download";
+      btn.onclick = async () => {
+        await BookStore.remove(book.id).catch(() => {});
+        toast("Removed from this device.");
+        if (book.local) { closeModal(); buildRows(); }
+        else refreshDownloadBtn(book);
+      };
+    } else {
+      btn.textContent = "⬇ Download";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = "Downloading…";
+        try {
+          const text = await FolioAPI.downloadText(book);
+          await BookStore.save(BookStore.metaFrom(book), text);
+          toast("✓ Saved — read & listen offline anytime.");
+        } catch {
+          toast("Download failed — check your connection.");
+        }
+        refreshDownloadBtn(book);
+      };
+    }
   }
 
   function closeModal() {
@@ -285,6 +333,13 @@
 
   async function openBookById(id) {
     if (bookCache.has(id)) { openModal(bookCache.get(id)); return; }
+    const stored = await BookStore.get(id).catch(() => null);
+    if (stored) {
+      const rec = BookStore.recordFrom(stored);
+      bookCache.set(id, rec);
+      openModal(rec);
+      return;
+    }
     toast("Fetching book details…");
     try {
       const data = await FolioAPI.books({ ids: [id] });
@@ -365,6 +420,50 @@
       btn.classList.add("active");
       reader.setFontSize(+btn.dataset.size);
     });
+  });
+
+  /* ================= import your own books ================= */
+
+  $("btn-import").addEventListener("click", () => $("import-file").click());
+  $("import-file").addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    toast("Importing “" + file.name + "”…", 60000);
+    try {
+      const { title, author, text } = await FolioImport.fromFile(file);
+      const id = "local-" + Date.now();
+      await BookStore.save({ id, title, author, subjects: [], local: true }, text);
+      const rec = BookStore.recordFrom({ id, title, author, local: true });
+      bookCache.set(id, rec);
+      toast("✓ Imported — opening…");
+      openReader(rec);
+    } catch (err) {
+      toast(err.message || "Couldn't import that file.");
+    }
+  });
+
+  /* ================= install as an app (PWA) ================= */
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+  let installPrompt = null;
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    $("btn-install").classList.remove("hidden");
+  });
+  $("btn-install").addEventListener("click", async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    installPrompt = null;
+    $("btn-install").classList.add("hidden");
+  });
+  window.addEventListener("appinstalled", () => {
+    $("btn-install").classList.add("hidden");
+    toast("📲 Folio installed — find it on your home screen.");
   });
 
   /* ================= boot ================= */

@@ -14,15 +14,30 @@ const FolioAPI = (() => {
     (u) => "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u),
   ];
 
-  async function fetchWithFallback(url, asJson) {
+  async function fetchOnce(url, asJson, timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { redirect: "follow", signal: ctrl.signal });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return asJson ? await res.json() : await res.text();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Try every URL candidate directly, then through each proxy —
+   *  with a per-attempt timeout so nothing hangs forever. */
+  async function fetchWithFallback(urlOrUrls, asJson, timeoutMs = 15000) {
+    const urls = Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls];
     let lastErr;
     for (const wrap of PROXIES) {
-      try {
-        const res = await fetch(wrap(url), { redirect: "follow" });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        return asJson ? await res.json() : await res.text();
-      } catch (e) {
-        lastErr = e;
+      for (const u of urls) {
+        try {
+          return await fetchOnce(wrap(u), asJson, timeoutMs);
+        } catch (e) {
+          lastErr = e;
+        }
       }
     }
     throw lastErr || new Error("Network error");
@@ -64,10 +79,18 @@ const FolioAPI = (() => {
   /* ---------------- text download & cleanup ---------------- */
 
   async function downloadText(book, onStatus) {
-    const url = plainTextUrl(book);
-    if (!url) throw new Error("No readable text available for this book.");
+    const urls = [];
+    const fmt = plainTextUrl(book);
+    if (fmt) urls.push(fmt);
+    if (typeof book.id === "number") {
+      // well-known Gutenberg layouts, in case the catalog URL stalls
+      urls.push(`https://www.gutenberg.org/cache/epub/${book.id}/pg${book.id}.txt`);
+      urls.push(`https://www.gutenberg.org/files/${book.id}/${book.id}-0.txt`);
+    }
+    const unique = [...new Set(urls)];
+    if (!unique.length) throw new Error("No readable text available for this book.");
     onStatus && onStatus("Downloading book text…");
-    const raw = await fetchWithFallback(url, false);
+    const raw = await fetchWithFallback(unique, false, 20000);
     return cleanGutenbergText(raw);
   }
 
@@ -222,5 +245,5 @@ const FolioAPI = (() => {
     return null;
   }
 
-  return { books, coverUrl, plainTextUrl, authorName, downloadText, parseBook };
+  return { books, coverUrl, plainTextUrl, authorName, downloadText, parseBook, cleanText: cleanGutenbergText };
 })();

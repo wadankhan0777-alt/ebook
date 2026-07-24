@@ -58,23 +58,37 @@ class Reader {
     this._showLoading("Downloading book text…", 0);
 
     try {
-      const text = await FolioAPI.downloadText(book, (s) => this._showLoading(s, 5));
+      // Offline first: books you've opened before load instantly from device storage.
+      const stored = await BookStore.get(book.id).catch(() => null);
       if (session !== this._session) return;
-      this._showLoading("Preparing chapters…", 10);
+      let text;
+      if (stored && stored.text) {
+        text = stored.text;
+      } else {
+        text = await FolioAPI.downloadText(book, (s) => this._showLoading(s, 5));
+        if (session !== this._session) return;
+        BookStore.save(BookStore.metaFrom(book), text).catch(() => {});
+      }
+
+      this._showLoading("Preparing chapters…", 8);
+      await new Promise((r) => requestAnimationFrame(r));
+      if (session !== this._session) return;
       this.parsed = FolioAPI.parseBook(text);
       if (!this.parsed.words.length) throw new Error("This book has no readable text.");
+      this._escaped = this.parsed.words.map(escapeHTML);
+      // prefix sums of character counts → smart page-size guesses
+      const n = this.parsed.words.length;
+      this._cum = new Float64Array(n + 1);
+      for (let i = 0; i < n; i++) this._cum[i + 1] = this._cum[i] + this.parsed.words[i].length + 1;
 
       this.narrator.load(this.parsed);
       const saved = Progress.get(book.id);
-      const resumeWord = saved ? Math.min(saved.word || 0, this.parsed.words.length - 1) : 0;
+      const resumeWord = saved ? Math.min(saved.word || 0, n - 1) : 0;
       this._lastWord = resumeWord;
       this._highlighted = null;
 
-      await this._paginate(session);
+      await this._startPagination(session, resumeWord, stored && stored.pag);
       if (session !== this._session) return;
-
-      this._hideLoading();
-      this._renderSpread(this._spreadOfPage(this._pageOfWord(resumeWord)));
       this.narrator.seekSentence(this._sentenceOfWord(resumeWord), false);
       if (saved && resumeWord > 0) toast("Resumed where you left off ✓");
     } catch (e) {
@@ -102,16 +116,31 @@ class Reader {
   }
   _hideLoading() { this.el.loading.classList.add("hidden"); }
 
-  /* ================= pagination ================= */
+  /* ================= pagination =================
+   * Progressive: the book appears as soon as the page holding the
+   * resume position is laid out; the rest is measured in background
+   * chunks. Finished layouts are cached per screen geometry, so
+   * reopening a book is instant. */
 
-  async _paginate(session, keepWord = null) {
-    const first = keepWord ?? (this.pages[this._pageOfSpread(this.spread)] || {}).start ?? 0;
+  async _startPagination(session, showAtWord, cachedPag) {
+    this._pagGen = (this._pagGen || 0) + 1;
+    const gen = this._pagGen;
+    const alive = () => session === this._session && gen === this._pagGen;
+
     this.single = window.innerWidth < 820;
     document.body.classList.toggle("single-page", this.single);
-
-    // Size the offscreen measurer exactly like a live page.
     this._applyFontSize();
     const rect = this.el.right.querySelector(".page-content").getBoundingClientRect();
+    const geoKey = `${Math.round(rect.width)}x${Math.round(rect.height)}x${this.fontSize}x${this.single ? 1 : 2}`;
+
+    if (cachedPag && cachedPag.key === geoKey && cachedPag.pages && cachedPag.pages.length) {
+      this.pages = cachedPag.pages;
+      this._pagDone = true;
+      this._hideLoading();
+      this._renderSpread(this._spreadOfPage(this._pageOfWord(showAtWord)));
+      return;
+    }
+
     const m = this.el.measurerContent;
     m.style.width = rect.width + "px";
     m.style.height = rect.height + "px";
@@ -122,64 +151,122 @@ class Reader {
       .filter((p) => p.type === "heading")
       .map((p) => p.startWord);
 
-    const pages = [];
+    this.pages = [];
+    this._pagDone = false;
+    const state = { charHint: 1300, hIdx: 0 };
     let w = 0;
-    let sinceYield = 0;
+    let shown = false;
     while (w < total) {
-      const end = this._findPageEnd(w, total, headingStarts);
-      pages.push({ start: w, end });
+      const end = this._findPageEnd(w, total, headingStarts, state);
+      this.pages.push({ start: w, end });
       w = end + 1;
-      if (++sinceYield >= 12) {
-        sinceYield = 0;
-        this._showLoading(`Laying out pages… ${pages.length}`, 10 + (w / total) * 90);
+      if (!shown && end >= showAtWord) {
+        shown = true;
+        this._hideLoading();
+        this._renderSpread(this._spreadOfPage(this._pageOfWord(showAtWord)));
+      }
+      if (this.pages.length % 6 === 0) {
+        if (!shown) {
+          this._showLoading(`Laying out pages… ${this.pages.length}`, 8 + (w / total) * 90);
+        }
         await new Promise((r) => setTimeout(r, 0));
-        if (session !== this._session) return;
+        if (!alive()) return;
       }
     }
     m.innerHTML = "";
-    this.pages = pages;
-    // Always re-render: page boundaries just changed, the DOM is stale.
-    if (keepWord != null) this._renderSpread(this._spreadOfPage(this._pageOfWord(first)));
+    this._pagDone = true;
+    if (!shown) {
+      this._hideLoading();
+      this._renderSpread(this._spreadOfPage(this._pageOfWord(Math.min(showAtWord, total - 1))));
+    } else {
+      this._renderSpread(this.spread); // refresh page count & nav state
+    }
+    BookStore.savePagination(this.book.id, { key: geoKey, pages: this.pages }).catch(() => {});
   }
 
-  _findPageEnd(start, total, headingStarts) {
+  async _restartPagination(keepWord) {
+    if (!this.parsed) return;
+    const session = this._session;
+    this._showLoading("Reflowing pages…", 5);
+    await this._startPagination(session, keepWord, null);
+  }
+
+  _findPageEnd(start, total, headingStarts, state) {
     // Never run past the next chapter heading — chapters start on a fresh page.
-    let cap = total - 1;
-    for (const h of headingStarts) {
-      if (h > start) { cap = h - 1; break; }
-    }
+    while (state.hIdx < headingStarts.length && headingStarts[state.hIdx] <= start) state.hIdx++;
+    const cap = state.hIdx < headingStarts.length ? headingStarts[state.hIdx] - 1 : total - 1;
+
+    const mc = this.el.measurerContent;
     const fits = (end) => {
-      this.el.measurerContent.innerHTML = this._buildRangeHTML(start, end);
-      return this.el.measurerContent.scrollHeight <= this.el.measurerContent.clientHeight + 2;
+      mc.innerHTML = this._buildRangeHTML(start, end);
+      return mc.scrollHeight <= mc.clientHeight + 2;
     };
-    // Exponential probe, then binary search for the largest fitting range.
-    let lo = start;
-    let hi = Math.min(start + 120, cap);
-    while (hi < cap && fits(hi)) {
-      lo = hi;
-      hi = Math.min(hi + (hi - start + 60) , cap);
+
+    // First guess from character capacity of previous pages (usually 1-2 words off).
+    const cum = this._cum;
+    let lo = start, hi = cap;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cum[mid + 1] - cum[start] <= state.charHint) lo = mid;
+      else hi = mid - 1;
     }
-    if (fits(hi)) return hi;
-    while (lo + 1 < hi) {
+    let probe = Math.max(start, Math.min(lo, cap));
+
+    let good, bad;
+    if (fits(probe)) {
+      good = probe;
+      if (probe >= cap) { this._learn(state, start, cap); return cap; }
+      let step = Math.max(8, Math.round((probe - start + 1) * 0.06));
+      bad = null;
+      while (good < cap) {
+        const nxt = Math.min(good + step, cap);
+        if (fits(nxt)) { good = nxt; step *= 2; }
+        else { bad = nxt; break; }
+      }
+      if (bad == null) { this._learn(state, start, good); return good; }
+    } else {
+      good = start;
+      bad = probe;
+    }
+    while (good + 1 < bad) {
+      const mid = (good + bad) >> 1;
+      if (fits(mid)) good = mid;
+      else bad = mid;
+    }
+    this._learn(state, start, good);
+    return Math.max(good, start); // always progress at least one word
+  }
+
+  _learn(state, start, end) {
+    const chars = this._cum[end + 1] - this._cum[start];
+    if (chars > 200) state.charHint = 0.6 * state.charHint + 0.4 * chars;
+  }
+
+  _paraOfWord(w) {
+    const ps = this.parsed.paragraphs;
+    let lo = 0, hi = ps.length - 1, ans = 0;
+    while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (fits(mid)) lo = mid;
-      else hi = mid;
+      if (ps[mid].startWord <= w) { ans = mid; lo = mid + 1; }
+      else hi = mid - 1;
     }
-    return Math.max(lo, start); // always progress at least one word
+    return ans;
   }
 
   _buildRangeHTML(start, end) {
-    const { words, paragraphs } = this.parsed;
+    const { paragraphs } = this.parsed;
+    const esc = this._escaped;
     let html = "";
-    for (const p of paragraphs) {
-      if (p.endWord < start) continue;
+    for (let pi = this._paraOfWord(start); pi < paragraphs.length; pi++) {
+      const p = paragraphs[pi];
       if (p.startWord > end) break;
+      if (p.endWord < start) continue;
       const from = Math.max(p.startWord, start);
       const to = Math.min(p.endWord, end);
       let inner = "";
       for (let i = from; i <= to; i++) {
         if (inner) inner += " ";
-        inner += `<span class="w" data-w="${i}">${escapeHTML(words[i])}</span>`;
+        inner += `<span class="w" data-w="${i}">${esc[i]}</span>`;
       }
       if (p.type === "heading") {
         html += `<h2 class="chapter">${inner}</h2>`;
@@ -242,8 +329,9 @@ class Reader {
       this._renderPageInto(this.el.right, this.spread * 2 + 1);
     }
     this.el.prev.disabled = this.spread === 0;
-    this.el.next.disabled = this.spread >= this.spreadCount - 1;
-    this.el.pageIndicator.textContent = `p. ${this._pageOfSpread(this.spread) + 1} / ${this.pages.length}`;
+    this.el.next.disabled = this._pagDone && this.spread >= this.spreadCount - 1;
+    this.el.pageIndicator.textContent =
+      `p. ${this._pageOfSpread(this.spread) + 1} / ${this.pages.length}${this._pagDone ? "" : "+"}`;
     const first = this.pages[this._pageOfSpread(this.spread)];
     if (first) {
       this.el.progressFill.style.width = ((first.start / this.parsed.words.length) * 100) + "%";
@@ -474,12 +562,8 @@ class Reader {
   async setFontSize(px) {
     this.fontSize = px;
     if (!this.parsed) return;
-    const session = this._session;
     const keep = this._lastWord ?? (this.pages[this._pageOfSpread(this.spread)] || {}).start ?? 0;
-    this._showLoading("Reflowing pages…", 10);
-    await this._paginate(session, keep);
-    if (session !== this._session) return;
-    this._hideLoading();
+    await this._restartPagination(keep);
   }
 
   _bind() {
@@ -532,11 +616,9 @@ class Reader {
     window.addEventListener("resize", () => {
       if (this.el.view.classList.contains("hidden") || !this.parsed) return;
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(async () => {
-        const session = this._session;
+      resizeTimer = setTimeout(() => {
         const keep = this._lastWord ?? (this.pages[this._pageOfSpread(this.spread)] || {}).start ?? 0;
-        await this._paginate(session, keep);
-        if (session === this._session) this._hideLoading();
+        this._restartPagination(keep);
       }, 350);
     });
 
