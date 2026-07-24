@@ -652,10 +652,13 @@ class Reader {
       }
     };
     this.narrator.onEngineStatus = (st) => {
-      if (st.engine === "neural" && st.status === "loading") {
-        this.el.nowSpeaking.textContent = `✨ Preparing the AI narrator… ${st.progress || 0}% (one-time download)`;
-      } else if (st.engine === "neural" && st.status === "error") {
-        toast("AI voice couldn't load — using device voices instead.");
+      if (st.status === "loading") {
+        const mb = st.mb ? ` — ${st.mb.done.toFixed(0)} of ${st.mb.total.toFixed(0)} MB` : "";
+        this.el.nowSpeaking.textContent =
+          `✨ Downloading the AI voice, one time only… ${st.progress || 0}%${mb}`;
+      } else if (st.status === "error") {
+        this.el.nowSpeaking.textContent = "";
+        toast("The AI voice couldn't load here — narrating with your device voice instead.", 5000);
       }
     };
     this.narrator.onEnd = () => {

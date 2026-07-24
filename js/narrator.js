@@ -179,18 +179,38 @@ class Narrator {
             let l = 0, t = 0;
             for (const [a, b] of Object.values(seen)) { l += a; t += b; }
             this.neural.progress = Math.round((l / t) * 100);
+            this.neural.mb = { done: l / 1048576, total: t / 1048576 };
             this._emitEngine();
           }
         };
 
-        // Prefer GPU; if that path fails on this device, retry on WASM.
+        const withTimeout = (promise, ms, label) =>
+          Promise.race([
+            promise,
+            new Promise((_, rej) => setTimeout(() => rej(new Error(label + " timed out")), ms)),
+          ]);
+
+        // Always q8 (~86 MB). fp32 is ~326 MB — unusable on a phone.
+        // Try the GPU first, then plain WASM, and verify each attempt can
+        // actually speak, so a device whose GPU loads but cannot generate
+        // still falls through to the working path.
         const attempts = navigator.gpu
-          ? [{ device: "webgpu", dtype: "fp32" }, { device: "wasm", dtype: "q8" }]
+          ? [{ device: "webgpu", dtype: "q8" }, { device: "wasm", dtype: "q8" }]
           : [{ device: "wasm", dtype: "q8" }];
         let lastErr = null;
         for (const { device, dtype } of attempts) {
           try {
-            this.neural.tts = await mod.KokoroTTS.from_pretrained(KOKORO_MODEL, { dtype, device, progress_callback });
+            const tts = await withTimeout(
+              mod.KokoroTTS.from_pretrained(KOKORO_MODEL, { dtype, device, progress_callback }),
+              8 * 60 * 1000, "Voice download"
+            );
+            const check = await withTimeout(
+              tts.generate("Ready.", { voice: this.neuralVoice, speed: 1 }),
+              90 * 1000, "Voice startup"
+            );
+            if (!check || !check.audio || !check.audio.length) throw new Error("Engine produced no audio");
+            this.neural.tts = tts;
+            this.neural.device = device;
             lastErr = null;
             break;
           } catch (e) {
@@ -200,16 +220,15 @@ class Narrator {
         }
         if (!this.neural.tts) throw lastErr || new Error("Model failed to load");
 
-        // Verify the engine actually produces audio before declaring ready.
-        const check = await this.neural.tts.generate("Ready.", { voice: this.neuralVoice, speed: 1 });
-        if (!check || !check.audio || !check.audio.length) throw new Error("Engine produced no audio");
-
         this.neural.status = "ready";
         this._emitEngine();
         return true;
       } catch (e) {
         this.neural.status = "error";
-        this.neural.error = e && e.message;
+        this.neural.error = (e && e.message) || "unknown error";
+        // Fall back for real: switch the setting so the user gets working
+        // audio immediately and the panel reflects what is actually used.
+        this.engine = "system";
         this._emitEngine();
         return false;
       }
@@ -432,6 +451,9 @@ class Narrator {
       return;
     }
     if (session !== this._session || !this.playing) return;
+    // An empty clip would make createBuffer throw and silently kill the
+    // whole narration chain — skip the segment instead.
+    if (!clip || !clip.samples || !clip.samples.length) { done(); return; }
     if (performance.now() - genStart > 45000 && !this._warnedSlow) {
       this._warnedSlow = true;
       if (typeof toast === "function") {
@@ -442,40 +464,48 @@ class Narrator {
     // Warm the cache for what comes next while this clip plays.
     this._prefetch(seg);
 
-    const ctx = AudioHub.ctx();
-    const buffer = ctx.createBuffer(1, clip.samples.length, clip.rate);
-    buffer.getChannelData(0).set(clip.samples);
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.playbackRate.value = 1;
-    source.connect(ctx.destination);
-    this._source = source;
+    // Any failure here must not end the book: fall back to the device
+    // voice for this segment rather than stopping silently.
+    try {
+      const ctx = AudioHub.ctx();
+      const buffer = ctx.createBuffer(1, clip.samples.length, clip.rate);
+      buffer.getChannelData(0).set(clip.samples);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = 1;
+      source.connect(ctx.destination);
+      this._source = source;
 
-    // Word highlighting: distribute duration across words by weight.
-    const weights = words.map((x) => x.w.length + 1.4 + (/[,;:.!?…]$/.test(x.w) ? 2.2 : 0));
-    const totalW = weights.reduce((a, b) => a + b, 0) || 1;
-    const duration = buffer.duration;
-    const t0 = ctx.currentTime;
-    if (this.onWord) this.onWord(seg.start);
-    this._clearEstimator();
-    this._estimator = setInterval(() => {
-      if (session !== this._session) { this._clearEstimator(); return; }
-      const frac = Math.min(1, (ctx.currentTime - t0) / duration);
-      let acc = 0, wi = 0;
-      for (; wi < weights.length - 1; wi++) {
-        acc += weights[wi];
-        if (acc / totalW > frac) break;
-      }
-      if (this.onWord) this.onWord(words[wi].g);
-    }, 90);
-
-    source.onended = () => {
-      if (session !== this._session) return;
+      // Word highlighting: distribute duration across words by weight.
+      const weights = words.map((x) => x.w.length + 1.4 + (/[,;:.!?…]$/.test(x.w) ? 2.2 : 0));
+      const totalW = weights.reduce((a, b) => a + b, 0) || 1;
+      const duration = buffer.duration;
+      const t0 = ctx.currentTime;
+      if (this.onWord) this.onWord(seg.start);
       this._clearEstimator();
-      this._source = null;
-      done();
-    };
-    source.start();
+      this._estimator = setInterval(() => {
+        if (session !== this._session) { this._clearEstimator(); return; }
+        const frac = Math.min(1, (ctx.currentTime - t0) / duration);
+        let acc = 0, wi = 0;
+        for (; wi < weights.length - 1; wi++) {
+          acc += weights[wi];
+          if (acc / totalW > frac) break;
+        }
+        if (this.onWord) this.onWord(words[wi].g);
+      }, 90);
+
+      source.onended = () => {
+        if (session !== this._session) return;
+        this._clearEstimator();
+        this._source = null;
+        done();
+      };
+      source.start();
+    } catch {
+      this._clearEstimator();
+      if (session !== this._session || !this.playing) return;
+      this._systemSpeak(seg, session, done);
+    }
   }
 
   /** Serialize + cache Kokoro generations. */
