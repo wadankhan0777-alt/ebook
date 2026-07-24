@@ -2,7 +2,7 @@
  * App shell: stale-while-revalidate. Covers/images: cache-first.
  * Book texts live in IndexedDB (managed by the app), not here. */
 
-const CACHE = "folio-v1";
+const CACHE = "folio-v2";
 const SHELL = [
   "./",
   "index.html",
@@ -12,6 +12,7 @@ const SHELL = [
   "js/store.js",
   "js/import.js",
   "js/narrator.js",
+  "js/music.js",
   "js/reader.js",
   "js/app.js",
   "manifest.webmanifest",
@@ -51,8 +52,8 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  if (req.destination === "image") {
-    // book covers: cache-first so shelves render offline
+  if (url.hostname === "cdn.jsdelivr.net" || req.destination === "image") {
+    // AI-voice library + book covers: cache-first so they work offline
     e.respondWith(
       caches.match(req).then(
         (cached) =>

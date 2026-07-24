@@ -14,33 +14,50 @@ const FolioAPI = (() => {
     (u) => "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u),
   ];
 
-  async function fetchOnce(url, asJson, timeoutMs) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, { redirect: "follow", signal: ctrl.signal });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      return asJson ? await res.json() : await res.text();
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /** Try every URL candidate directly, then through each proxy —
-   *  with a per-attempt timeout so nothing hangs forever. */
-  async function fetchWithFallback(urlOrUrls, asJson, timeoutMs = 15000) {
+  /**
+   * Race all sources instead of trying them one by one: the direct
+   * URLs fire immediately, each proxy tier joins shortly after, and
+   * the first good response wins while the rest are aborted. This is
+   * what makes "Read & Listen" start in a second or two instead of
+   * crawling through a serial fallback chain.
+   */
+  function fetchWithFallback(urlOrUrls, asJson, timeoutMs = 20000, staggerMs = 1200) {
     const urls = Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls];
-    let lastErr;
-    for (const wrap of PROXIES) {
-      for (const u of urls) {
-        try {
-          return await fetchOnce(wrap(u), asJson, timeoutMs);
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-    }
-    throw lastErr || new Error("Network error");
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let pending = PROXIES.length * urls.length;
+      const ctrls = [];
+
+      const fail = () => { if (--pending <= 0 && !settled) reject(new Error("All book sources failed — check your connection.")); };
+
+      const launch = (url) => {
+        const ctrl = new AbortController();
+        ctrls.push(ctrl);
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        fetch(url, { redirect: "follow", signal: ctrl.signal })
+          .then((res) => {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return asJson ? res.json() : res.text();
+          })
+          .then((body) => {
+            // Reject proxy error pages masquerading as 200s.
+            if (!asJson && (typeof body !== "string" || body.length < 500)) throw new Error("Bad body");
+            if (settled) return;
+            settled = true;
+            for (const c of ctrls) { if (c !== ctrl) c.abort(); }
+            resolve(body);
+          })
+          .catch(fail)
+          .finally(() => clearTimeout(timer));
+      };
+
+      PROXIES.forEach((wrap, tier) => {
+        setTimeout(() => {
+          if (settled) { pending -= urls.length; return; }
+          for (const u of urls) launch(wrap(u));
+        }, tier * staggerMs);
+      });
+    });
   }
 
   /** Query the catalog. opts: {search, topic, page, ids, sort} */
@@ -169,7 +186,35 @@ const FolioAPI = (() => {
         }
       }
     }
-    return { words, paragraphs, sentences };
+    return { words, paragraphs, sentences, storyStart: findStoryStart(words, paragraphs) };
+  }
+
+  /**
+   * Where the actual story begins: skip title pages, author credits
+   * and tables of contents so narration starts at chapter one.
+   */
+  function findStoryStart(words, paragraphs) {
+    const NOT_STORY = /contents|illustrations|index|copyright|dedication|list of/i;
+    for (let i = 0; i < paragraphs.length; i++) {
+      const p = paragraphs[i];
+      if (p.type !== "heading") continue;
+      if (p.startWord > words.length * 0.25) break; // front matter lives up front
+      const text = words.slice(p.startWord, p.endWord + 1).join(" ");
+      if (NOT_STORY.test(text)) continue;
+      // A real chapter heading is followed closely by substantial prose.
+      for (let j = i + 1; j < Math.min(paragraphs.length, i + 3); j++) {
+        const q = paragraphs[j];
+        if (q.type === "heading") break;
+        if (q.endWord - q.startWord + 1 >= 30) return p.startWord;
+      }
+    }
+    // No usable headings: skip a leading run of short title/credit lines.
+    let firstProse = -1;
+    for (let i = 0; i < Math.min(paragraphs.length, 40); i++) {
+      const p = paragraphs[i];
+      if (p.type === "para" && p.endWord - p.startWord + 1 >= 30) { firstProse = i; break; }
+    }
+    return firstProse > 0 ? paragraphs[firstProse].startWord : 0;
   }
 
   const OPEN_Q = /[“"«]/;
@@ -179,22 +224,21 @@ const FolioAPI = (() => {
   const NAME_RE = /^(?:Mr\.|Mrs\.|Miss|Ms\.|Dr\.|Lady|Lord|Sir|Aunt|Uncle|Captain|Professor|Madame|Monsieur)?$|^[A-Z][a-zA-Z'’-]+[,.;:!?]*$/;
 
   function makeSentence(words, start, end, para) {
-    // Split into narration vs dialogue segments by tracking quote characters.
+    // Split into narration vs dialogue segments. Quote position matters:
+    // a quote mark at the START of a word opens speech ("I …), one at the
+    // END of a word closes it (… am,") — this keeps straight quotes,
+    // which are both open and close characters, segmented correctly.
     const segments = [];
     let segStart = start;
     let inQuote = false;
     for (let i = start; i <= end; i++) {
       const w = words[i];
-      const opens = OPEN_Q.test(w) && !inQuote;
-      const closes = CLOSE_Q.test(w) && (inQuote || OPEN_Q.test(w));
-      if (opens) {
-        if (i > segStart) {
-          segments.push({ start: segStart, end: i - 1, type: inQuote ? "dialogue" : "narration" });
-        }
+      if (!inQuote && /^["“«]/.test(w)) {
+        if (i > segStart) segments.push({ start: segStart, end: i - 1, type: "narration" });
         segStart = i;
         inQuote = true;
       }
-      if (closes && inQuote) {
+      if (inQuote && /["”»][.,;:!?…]*$/.test(w)) {
         segments.push({ start: segStart, end: i, type: "dialogue" });
         segStart = i + 1;
         inQuote = false;
@@ -228,11 +272,12 @@ const FolioAPI = (() => {
     for (let i = from; i <= to; i++) {
       const w = words[i].replace(/[^a-zA-Z]/g, "").toLowerCase();
       if (AFTER_RE.test(w)) {
-        // verb + Name  ("said Alice")
+        // verb + name — "said Alice", "said the baker", "replied old Mr. Brown"
         for (let j = i + 1; j <= Math.min(to, i + 3); j++) {
           const cand = words[j];
-          if (/^(?:the|a|an|his|her|their|my|our|old|young|little)$/i.test(cand)) continue;
-          if (/^[A-Z]/.test(cand)) return cand.replace(/[^A-Za-z'’-]/g, "");
+          if (/^(?:the|a|an|his|her|their|my|our|old|young|little|poor|good)$/i.test(cand)) continue;
+          const name = cand.replace(/[^A-Za-z'’-]/g, "");
+          if (name.length >= 2) return name;
           break;
         }
         // Name + verb  ("Alice said")

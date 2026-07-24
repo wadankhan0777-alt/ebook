@@ -83,14 +83,19 @@ class Reader {
 
       this.narrator.load(this.parsed);
       const saved = Progress.get(book.id);
-      const resumeWord = saved ? Math.min(saved.word || 0, n - 1) : 0;
+      // First open: start at the story itself, past title pages & contents.
+      const resumeWord = saved
+        ? Math.min(saved.word || 0, n - 1)
+        : Math.min(this.parsed.storyStart || 0, n - 1);
       this._lastWord = resumeWord;
       this._highlighted = null;
+      this.el.view.querySelectorAll(".running-head").forEach((h) => { h.textContent = book.title; });
 
       await this._startPagination(session, resumeWord, stored && stored.pag);
       if (session !== this._session) return;
       this.narrator.seekSentence(this._sentenceOfWord(resumeWord), false);
       if (saved && resumeWord > 0) toast("Resumed where you left off ✓");
+      else if (resumeWord > 0) toast("Started at the story — flip back for the title pages.");
     } catch (e) {
       if (session !== this._session) return;
       this._hideLoading();
@@ -131,7 +136,8 @@ class Reader {
     document.body.classList.toggle("single-page", this.single);
     this._applyFontSize();
     const rect = this.el.right.querySelector(".page-content").getBoundingClientRect();
-    const geoKey = `${Math.round(rect.width)}x${Math.round(rect.height)}x${this.fontSize}x${this.single ? 1 : 2}`;
+    // LAYOUT_V invalidates cached paginations whenever page styling changes.
+    const geoKey = `v3:${Math.round(rect.width)}x${Math.round(rect.height)}x${this.fontSize}x${this.single ? 1 : 2}`;
 
     if (cachedPag && cachedPag.key === geoKey && cachedPag.pages && cachedPag.pages.length) {
       this.pages = cachedPag.pages;
@@ -270,6 +276,8 @@ class Reader {
       }
       if (p.type === "heading") {
         html += `<h2 class="chapter">${inner}</h2>`;
+      } else if (from === p.startWord && pi > 0 && paragraphs[pi - 1].type === "heading") {
+        html += `<p class="no-indent drop">${inner}</p>`; // chapter opening gets a drop cap
       } else {
         const cont = from > p.startWord ? ' class="no-indent"' : "";
         html += `<p${cont}>${inner}</p>`;
@@ -389,12 +397,14 @@ class Reader {
     this._clearLeaf();
     const leaf = document.createElement("div");
     leaf.className = "leaf " + (dir > 0 || this.single ? "forward" : "backward");
+    const title = escapeHTML(this.book ? this.book.title : "");
+    const faceHTML = `<div class="running-head">${title}</div><div class="page-content"></div><div class="page-num"></div>`;
     const front = document.createElement("div");
     front.className = "leaf-face leaf-front";
-    front.innerHTML = '<div class="page-content"></div><div class="page-num"></div>';
+    front.innerHTML = faceHTML;
     const back = document.createElement("div");
     back.className = "leaf-face leaf-back";
-    back.innerHTML = '<div class="page-content"></div><div class="page-num"></div>';
+    back.innerHTML = faceHTML;
     const shadow = document.createElement("div");
     shadow.className = "leaf-shadow";
     leaf.append(front, back, shadow);
@@ -627,15 +637,31 @@ class Reader {
     this.narrator.onSentence = (idx) => {
       const s = this.parsed && this.parsed.sentences[idx];
       if (!s) return;
+      const sentText = this.parsed.words.slice(s.start, s.end + 1).join(" ");
       const preview = this.parsed.words.slice(s.start, Math.min(s.end + 1, s.start + 12)).join(" ");
       this.el.nowSpeaking.textContent = "“" + preview + (s.end - s.start > 11 ? "…" : "") + "”";
+      if (this.narrator.playing && typeof MoodMusic !== "undefined") MoodMusic.update(sentText);
       this._saveProgress();
     };
     this.narrator.onState = (playing) => {
       this.el.play.textContent = playing ? "⏸" : "▶";
       this.el.play.title = playing ? "Pause narration" : "Play narration";
+      if (typeof MoodMusic !== "undefined") {
+        if (playing) MoodMusic.start();
+        else MoodMusic.stop();
+      }
     };
-    this.narrator.onEnd = () => toast("📖 The End — narration finished.");
+    this.narrator.onEngineStatus = (st) => {
+      if (st.engine === "neural" && st.status === "loading") {
+        this.el.nowSpeaking.textContent = `✨ Preparing the AI narrator… ${st.progress || 0}% (one-time download)`;
+      } else if (st.engine === "neural" && st.status === "error") {
+        toast("AI voice couldn't load — using device voices instead.");
+      }
+    };
+    this.narrator.onEnd = () => {
+      if (typeof MoodMusic !== "undefined") MoodMusic.stop();
+      toast("📖 The End — narration finished.");
+    };
   }
 }
 
